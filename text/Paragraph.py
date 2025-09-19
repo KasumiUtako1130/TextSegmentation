@@ -1,0 +1,199 @@
+import os
+import re
+import docx
+import pdfplumber
+from typing import List
+
+
+def clean_chunk(text: str) -> str:
+    # 去掉页码形式：- 1 -、— 12 —、第3页、第3页/共10页
+    text = re.sub(r'^\s*[-—]?\s*\d+\s*[-—]?\s*$', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^\s*第\s*\d+\s*页(\s*/\s*共\s*\d+\s*页)?\s*$', '', text, flags=re.MULTILINE)
+
+    text = text.replace('\xa0', ' ')   # 替换不可见空格
+    text = re.sub(r'\n+', ' ', text)   # 合并多余换行
+    text = re.sub(r'[ ]+', ' ', text)  # 合并多余空格
+    return text.strip()
+
+def looks_like_contract(text: str, min_clause_count=2) -> bool:
+    pattern = re.compile(r'^\s*([一二三四五六七八九十]+、|\d+\.\s|\(\d+\))', re.MULTILINE)
+    clauses = pattern.findall(text)
+    return len(clauses) >= min_clause_count
+
+def is_contract_or_legal_text(text: str) -> bool:
+    keywords = ["合同", "示范文本", "协议"]
+    if any(kw in text for kw in keywords):
+        return True
+    return looks_like_contract(text)
+
+# 按标点符号划分句子，保留句子完整性，防止不同段落之间重复的部分会直接切断句子
+def split_into_sentences(text: str) -> List[str]:
+    parts = re.split(r'([。！？；.!?])', text)
+    sents = []
+    i = 0
+    while i < len(parts):
+        piece = parts[i].strip()
+        punct = parts[i+1] if i+1 < len(parts) else ''
+        if piece or punct:
+            sents.append(piece + punct)
+        i += 2
+    # 处理极端情况（如果正则分割产生空结果）
+    if not sents and text.strip():
+        sents = [text.strip()]
+    return sents
+
+# 按段落切分
+def split_paragraphs(text: str, chunk_size=5000, overlap=100) -> List[str]:
+    # 保留原始换行用于定位（不要先把所有换行替换掉）
+    text = text.replace("\r\n", "\n")
+
+    # 如果是合同/条款类，按条款起始符切分；否则按空行切分
+    raw_paragraphs = []
+    if looks_like_contract(text):
+        clause_pat = re.compile(
+            r'(?:第[一二三四五六七八九十百\d]+条|[一二三四五六七八九十]+[、.]|'
+            r'[（(](?:[一二三四五六七八九十百千]+|\d+|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+)[）)]|\d+[、.])'
+        )
+        matches = list(clause_pat.finditer(text))
+        if matches:
+            first_start = matches[0].start()
+            if first_start > 0:
+                head = text[:first_start].strip()
+                if head:
+                    raw_paragraphs.append(head)
+            for i, m in enumerate(matches):
+                start = m.start()
+                end = matches[i+1].start() if i+1 < len(matches) else len(text)
+                seg = text[start:end].strip()
+                if seg:
+                    raw_paragraphs.append(seg)
+        else:
+            raw_paragraphs = [p for p in re.split(r'\n', text) if p.strip()]
+    else:
+        raw_paragraphs = [p for p in re.split(r'\n', text) if p.strip()]
+
+    # 清理每个段落并对过长段落按句子切分（并在必要时使用字符级 overlap 回退到句子边界）
+    final_chunks: List[str] = []
+    puncts = "。！？；.!?"
+
+    for para in raw_paragraphs:
+        para = clean_chunk(para)
+        if not para:
+            continue
+
+        if len(para) <= chunk_size:
+            final_chunks.append(para)
+        else:
+            # 按句子拆（保留标点）
+            sentences = split_into_sentences(para)
+
+            cur_chunk_sents: List[str] = []
+            cur_len = 0
+            for sent in sentences:
+                # 如果下一个句子还能放下，直接加入当前 chunk
+                if cur_len + len(sent) <= chunk_size:
+                    cur_chunk_sents.append(sent)
+                    cur_len += len(sent)
+                else:
+                    # 当前 chunk 满了，先把它写入 final_chunks
+                    if cur_chunk_sents:
+                        final_chunks.append("".join(cur_chunk_sents))
+
+                    # 计算 overlap_text：从 previous chunk 的末尾取 overlap 个字符
+                    if overlap > 0 and final_chunks:
+                        prev_chunk_text = final_chunks[-1]
+                        raw_start = max(0, len(prev_chunk_text) - overlap)
+
+                        # 在 raw_start 之前寻找最后一个句子结束标点位置
+                        last_pos = -1
+                        for ch in puncts:
+                            pos = prev_chunk_text.rfind(ch, 0, raw_start)
+                            if pos > last_pos:
+                                last_pos = pos
+
+                        if last_pos == -1:
+                            # 没找到标点，从头开始（保守策略）
+                            start_pos = 0
+                        else:
+                            # 回退到标点后（即新句子的起始）
+                            start_pos = last_pos + 1
+
+                        overlap_text = prev_chunk_text[start_pos:]
+                        # 将 overlap_text 再拆成完整句子（防止出现半句）
+                        overlap_sents = split_into_sentences(overlap_text) if overlap_text.strip() else []
+                        # 新的当前 chunk 以这些完整句子开头，再加上当前这个无法放下的句子
+                        cur_chunk_sents = overlap_sents + [sent]
+                    else:
+                        # 不使用 overlap 或没有 previous chunk 时，直接从当前句子开始新 chunk
+                        cur_chunk_sents = [sent]
+
+                    cur_len = sum(len(x) for x in cur_chunk_sents)
+
+            # 循环结束后，如果还有残留 chunk，把它写入
+            if cur_chunk_sents:
+                final_chunks.append("".join(cur_chunk_sents))
+
+    return final_chunks
+
+
+# 文件读取
+def extract_text_from_file(file_path: str) -> str:
+    ext = os.path.splitext(file_path)[1].lower()
+    text = ""
+    if ext == ".txt":
+        with open(file_path, "r", encoding="utf-8") as f:
+            text = f.read()
+    elif ext in [".docx", ".doc"]:
+        doc = docx.Document(file_path)
+        paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+        text = "\n\n".join(paragraphs)   # 保留段落空行
+    elif ext in [".pdf"]:
+        paragraphs = []
+        with pdfplumber.open(file_path) as pdf:
+            for page in pdf.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    paragraphs.append(page_text)
+        text = "\n\n".join(paragraphs)
+    else:
+        raise ValueError(f"不支持的文件类型: {ext}")
+    return text
+
+if __name__ == "__main__":
+    test_files = [
+        # "../data/test.txt ",
+        # "../data/散文.docx",
+        # "../data/散文2.docx",
+        # "../data/散文3.docx",
+        # "../data/散文4.docx",
+        # "../data/散文6.docx",
+        # "../data/常年法律顾问服务合同.docx",
+        "../data/新疆维吾尔自治区中小学校校外供餐合同.pdf",
+        # "../data/三国演义.txt",
+    ]
+
+    output_dir = "../output"
+    os.makedirs(output_dir, exist_ok=True)
+
+    for f in test_files:
+        if not os.path.exists(f):
+            print(f"文件不存在: {f}")
+            continue
+
+        print(f"\n处理文件: {f}")
+        text = extract_text_from_file(f)
+        chunks = split_paragraphs(text, chunk_size=2000)  # 每段最多2000字
+
+        # 控制台输出
+        for idx, chunk in enumerate(chunks, 1):
+            print(f"Chunk {idx}:\t{chunk}")
+
+        # 保存切分内容到同名txt中
+        base_name = os.path.basename(f)
+        name = os.path.splitext(base_name)[0]
+        output_file = os.path.join(output_dir, f"{name}.txt")
+        with open(output_file, "w", encoding="utf-8") as wf:
+            for chunk in chunks:
+                wf.write(chunk + "\n\n")  # 段落之间加空行
+
+        print(f"已保存切分结果: {output_file}")

@@ -6,6 +6,7 @@ import tiktoken
 import os
 import docx
 import pdfplumber
+import json
 
 enc = tiktoken.get_encoding("cl100k_base")
 CUSTOM_SPLIT_SIGN = "\n\n---\n\n"
@@ -14,19 +15,25 @@ CUSTOM_SPLIT_SIGN = "\n\n---\n\n"
 def count_tokens(text: str) -> int:
     return len(enc.encode(text))
 
-# 清理chunk中的空白符和换行符
+
+# 清理chunks中的噪音
 def clean_chunk(text: str) -> str:
+    # 去掉页码形式：- 1 -、— 12 —、第3页、第3页/共10页
+    text = re.sub(r'^\s*[-—]?\s*\d+\s*[-—]?\s*$', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^\s*第\s*\d+\s*页(\s*/\s*共\s*\d+\s*页)?\s*$', '', text, flags=re.MULTILINE)
+
     text = text.replace('\xa0', ' ')  # 不间断空格换成普通空格
     text = re.sub(r'\n+', ' ', text)  # 所有换行变成空格
     text = re.sub(r'[ ]+', ' ', text)  # 多空格合并
     return text.strip()
+
 
 # 普通文本切分
 def split_common_text(text, chunk_size=500, chunk_overlap=50):
     # 定义切分器
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
-        chunk_overlap=0,
+        chunk_overlap=chunk_overlap,
         separators=["\n\n", "\n", "。", "！", "？", "；", "，", " "]  # 中文常见标点优先
     )
 
@@ -78,11 +85,13 @@ def split_contract_text(text: str, chunk_size=500, chunk_overlap=50):
     output_chunks = [c for idx, c in enumerate(final_chunks)]
     return output_chunks
 
+
 # 判断是否近似于合同、法律类文本
 def looks_like_contract(text: str, min_clause_count=2) -> bool:
     pattern = re.compile(r'^\s*([一二三四五六七八九十]+、|\d+\.\s|\(\d+\))', re.MULTILINE)
     clauses = pattern.findall(text)
     return len(clauses) >= min_clause_count
+
 
 # 判断是否合同类文本
 def is_contract_or_legal_text(text: str) -> bool:
@@ -90,6 +99,7 @@ def is_contract_or_legal_text(text: str) -> bool:
     if any(kw in text for kw in keywords):
         return True
     return looks_like_contract(text)
+
 
 # 按 y 坐标合并 PDF 文字块为行
 def merge_words_by_lines(words, column_threshold=5):
@@ -103,6 +113,8 @@ def merge_words_by_lines(words, column_threshold=5):
         line_text = " ".join([w[1] for w in line_words])
         sorted_lines.append(line_text)
     return sorted_lines
+
+
 # 判断罗马数字
 def is_numbering(text: str) -> bool:
     """判断文本是否是纯数字编号或罗马数字编号"""
@@ -112,6 +124,7 @@ def is_numbering(text: str) -> bool:
     if re.fullmatch(r"[IVXLCDMⅰ-ⅻⅬⅭⅮⅯ]+", text, flags=re.IGNORECASE):  # 罗马数字
         return True
     return False
+
 
 # 切分pdf普通文本
 def extract_pdf_chunks(file_path: str, chunk_size: int = 500, chunk_overlap: int = 50) -> List[str]:
@@ -137,7 +150,7 @@ def extract_pdf_chunks(file_path: str, chunk_size: int = 500, chunk_overlap: int
                         continue
 
                     # 如果当前行是数字/罗马数字 → 拼接到下一行
-                    if is_numbering(line): # 直接拼上，不另起chunk
+                    if is_numbering(line):  # 直接拼上，不另起chunk
                         continue
 
                     # 如果上一行没有标点结束，拼接
@@ -176,6 +189,7 @@ def extract_pdf_chunks(file_path: str, chunk_size: int = 500, chunk_overlap: int
                                 chunks.append(t)
     return chunks
 
+
 # excel按行切分
 def excel_to_chunks_auto(file_path: str, chunk_size: int = 500, chunk_overlap: int = 50):
     # 先尝试用 header=0 读取
@@ -207,6 +221,7 @@ def excel_to_chunks_auto(file_path: str, chunk_size: int = 500, chunk_overlap: i
 
     return all_chunks
 
+
 # 读取文件的原始文本
 def extract_text_from_file(file_path: str) -> str:
     ext = os.path.splitext(file_path)[1].lower()
@@ -218,11 +233,12 @@ def extract_text_from_file(file_path: str) -> str:
     elif ext in [".txt"]:
         with open(file_path, "r", encoding="utf-8") as f:
             text = f.read()
-    elif ext in [".xlsx", ".xls",".pdf"]:
+    elif ext in [".xlsx", ".xls", ".pdf"]:
         return None
     else:
         raise ValueError(f"不支持的文件类型: {ext}")
     return clean_chunk(text)
+
 
 # 按文件类型调用切分函数
 def split_file_to_chunks(file_path: str, chunk_size: int = 500, chunk_overlap: int = 50) -> List[str]:
@@ -243,23 +259,42 @@ def split_file_to_chunks(file_path: str, chunk_size: int = 500, chunk_overlap: i
 
 if __name__ == "__main__":
     test_files = [
-        # "data/綜合能力評估開考報名表.pdf",
-        "data/test.txt",
-        # "data/新建 XLSX 工作表.xlsx",
-        # "data/Day21 表格数据格式.xlsx",
-        # "data/Day04 排序.xlsx",
-        # "data/散文.docx",
-        # "data/《委托合同（示范文本）》（GF—2025—1001）.docx",
-        # "data/民事起诉状.docx",
-        # "data/常年法律顾问服务合同.docx",
-        # "data/《委托合同（示范文本）》（GF—2025—1001）.pdf",
-        # "data/新疆维吾尔自治区中小学校校外供餐合同.pdf"
+        # "../data/綜合能力評估開考報名表.pdf",
+        # "../data/test.txt",
+        # "../data/新建 XLSX 工作表.xlsx",
+        # "../data/Day21 表格数据格式.xlsx",
+        # "../data/Day04 排序.xlsx",
+        "../data/散文.docx",
+        # "../data/《委托合同（示范文本）》（GF—2025—1001）.docx",
+        # "../data/北京市机动车驾驶培训服务合同（示范文本）.docx",
+        # "../data/北京市科技类校外培训服务合同（示范文本）（试行）.docx",
+        # "../data/民事起诉状.docx",
+        # "../data/常年法律顾问服务合同.docx",
+        # "../data/《委托合同（示范文本）》（GF—2025—1001）.pdf",
+        # "../data/新疆维吾尔自治区中小学校校外供餐合同.pdf"
     ]
+
+    output_dir = "../output"
+    os.makedirs(output_dir, exist_ok=True)
+
     for f in test_files:
         if not os.path.exists(f):
             continue
         print(f"处理文件: {f}")
-        chunks = split_file_to_chunks(f, chunk_size=100, chunk_overlap=20)
+        chunks = split_file_to_chunks(f, chunk_size=200, chunk_overlap=20)
         for idx, chunk in enumerate(chunks):
-            print(f"Chunk {idx+1}:\t", chunk)
+            print(f"Chunk {idx + 1}:\t", chunk)
         print("=" * 60)
+
+        # 保存切分内容到同名txt中
+        base_name = os.path.basename(f)
+        name = os.path.splitext(base_name)[0]
+        output_file = os.path.join(output_dir, f"{name}_chunks.txt")
+
+        with open(output_file, "w", encoding="utf-8") as wf:
+            for chunk in chunks:
+                chunk = chunk.replace("\n", " ").strip()
+                if chunk:
+                    wf.write(chunk + "\n")
+
+        print(f"已保存txt文件：{output_file}")
