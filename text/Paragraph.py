@@ -305,7 +305,6 @@ if __name__ == "__main__":
         # "../data/常年法律顾问服务合同.docx",
         "../data/新疆维吾尔自治区中小学校校外供餐合同.pdf",
         # "../data/三国演义.txt"
-        # "../data/罗兆燊 简历 (2).pdf"
     ]
 
     os.makedirs(output_dir, exist_ok=True)
