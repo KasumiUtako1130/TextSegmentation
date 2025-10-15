@@ -264,14 +264,14 @@ if __name__ == "__main__":
         # "../data/新建 XLSX 工作表.xlsx",
         # "../data/Day21 表格数据格式.xlsx",
         # "../data/Day04 排序.xlsx",
-        "../data/散文.docx",
+        # "../data/散文.docx",
         # "../data/《委托合同（示范文本）》（GF—2025—1001）.docx",
         # "../data/北京市机动车驾驶培训服务合同（示范文本）.docx",
         # "../data/北京市科技类校外培训服务合同（示范文本）（试行）.docx",
         # "../data/民事起诉状.docx",
         # "../data/常年法律顾问服务合同.docx",
         # "../data/《委托合同（示范文本）》（GF—2025—1001）.pdf",
-        # "../data/新疆维吾尔自治区中小学校校外供餐合同.pdf"
+        "../data/新疆维吾尔自治区中小学校校外供餐合同.pdf"
     ]
 
     output_dir = "../output"

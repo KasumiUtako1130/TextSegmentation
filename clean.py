@@ -1,22 +1,26 @@
 import os
+import re
 from openai import OpenAI
-from pathlib import Path
 from prompt.dataClean import get_data_clean_prompt
+from config import ROOT_DIR
 
 # api key
+deepseek_api_key = os.getenv("DEEPSEEK_API_KEY")
 client = OpenAI(
-    api_key="sk-0a396d2798444089ae902925f45c34ae",
+    api_key=deepseek_api_key,
     base_url="https://api.deepseek.com",
 )
 MODEL_NAME = "deepseek-chat"
 
 # 输入输出目录
-INPUT_DIR = Path("./output")
-OUTPUT_DIR = Path("./cleaned")
+INPUT_DIR = ROOT_DIR / "output"
+OUTPUT_DIR = ROOT_DIR / "cleaned"
 OUTPUT_DIR.mkdir(exist_ok=True)
+
 
 # 清洗数据
 def clean_data(text: str, language: str = "zh", global_prompt: str = "", clean_prompt: str = "") -> str:
+
     prompt = get_data_clean_prompt(text, global_prompt, clean_prompt)
     try:
         response = client.chat.completions.create(
@@ -32,6 +36,7 @@ def clean_data(text: str, language: str = "zh", global_prompt: str = "", clean_p
         if not cleaned_text:
             print("清洗返回结果为空")
             return None
+        cleaned_text = re.sub(r'[ \t]+', ' ', cleaned_text).strip()
         return cleaned_text
     except Exception as e:
         print(f"清洗失败:{e}")
@@ -52,6 +57,7 @@ def split_paragraphs(text: str, max_length: int = 2000) -> list:
     if current_block:
         blocks.append(current_block.strip())
     return blocks
+
 
 # 处理文件
 def clean_file():

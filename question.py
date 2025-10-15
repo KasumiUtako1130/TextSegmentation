@@ -1,19 +1,24 @@
 import os
+import re
 import json
-from pathlib import Path
+from config import ROOT_DIR
 from openai import OpenAI
 from prompt.questionGenerate import get_question_generation_prompt
 from clean import clean_file, clean_data
 
+deepseek_api_key = os.getenv("DEEPSEEK_API_KEY")
 client = OpenAI(
-    api_key="sk-0a396d2798444089ae902925f45c34ae",
+    api_key=deepseek_api_key,
     base_url="https://api.deepseek.com",
 )
 MODEL_NAME = "deepseek-chat"
 
-CLEAN_DIR = Path("./cleaned")
-QA_DIR = Path("./QA")
-QA_DIR.mkdir(exist_ok=True)
+CLEAN_DIR = ROOT_DIR / "cleaned"
+QUESTION_DIR = ROOT_DIR / "question"
+IMAGE_MAP_PATH = ROOT_DIR / "output"/"maps"
+
+QUESTION_DIR.mkdir(exist_ok=True)
+IMAGE_MAP_PATH.mkdir(exist_ok=True)
 
 
 # 合并段落
@@ -68,6 +73,16 @@ def process_clean_files():
         if not filename.endswith(".txt"):
             continue
         input_path = CLEAN_DIR / filename
+
+        map_path = IMAGE_MAP_PATH / f"{filename.replace('.txt','_image_map.json')}"
+        if map_path.exists():
+            with open(map_path, "r", encoding="utf-8") as f:
+                image_map = json.load(f)
+            print(f"已加载图片映射文件：{map_path}")
+        else:
+            image_map = {}
+            print(f"未找到图片映射文件: {map_path}")
+
         with open(input_path, "r", encoding="utf-8") as f:
             paragraphs = [p.strip() for p in f.read().split("\n\n") if p.strip()]
 
@@ -77,26 +92,43 @@ def process_clean_files():
 
         print(f"处理文件：{filename}，共 {len(merged_paragraphs)} 段")
         for i, para in enumerate(merged_paragraphs, start=1):
-            print(f"生成段落 {i}/{len(merged_paragraphs)} 问题...")
+            print(f"生成 {i}/{len(merged_paragraphs)} 问题...")
             questions = generate_questions(para)
+
+            # 找出当前段落出现的图片占位符
+            images_in_para = []
+            for placeholder, url in image_map.items():
+                if placeholder.upper() in para.upper():
+                    images_in_para.append(url)
 
             for q in questions:
                 if isinstance(q, dict) and "question" in q:
+                    # 清洗question
                     cleaned_q = clean_data(q["question"])
+                    question_text = cleaned_q if cleaned_q else q["question"]
+
+                    placeholders_in_question = re.findall(r"\[IMAGE_\d+\]", question_text.upper())
+                    urls_for_question = [image_map.get(ph, "") for ph in placeholders_in_question]
+
                     qa_list.append({
                         "context": para,
-                        "question": cleaned_q if cleaned_q else q["question"]
+                        "question": question_text,
+                        "images": urls_for_question,
                     })
                 elif isinstance(q, str):
+                    placeholders_in_question = re.findall(r"\[IMAGE_\d+\]", q.upper())
+                    urls_for_question = [image_map.get(ph, "") for ph in placeholders_in_question]
+
                     qa_list.append({
                         "context": para,
-                        "question": q
+                        "question": q,
+                        "images": urls_for_question,
                     })
         # 输出 JSON
-        output_path = QA_DIR / f"{filename.replace('.txt', '.json')}"
+        output_path = QUESTION_DIR / f"{filename.replace('.txt', '.json')}"
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(qa_list, f, ensure_ascii=False, indent=2)
-        print(f"已保存问答文件：{output_path}")
+        print(f"已保存问题文件：{output_path}")
 
 
 if __name__ == "__main__":
